@@ -1,0 +1,37 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+logs/
+
+# Model weights / checkpoints
+models/
+checkpoints/
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.gguf
+
+# Hugging Face cache
+.cache/
+huggingface/
+hf_cache/
+
+# Prometheus / Grafana local data
+prometheus-data/
+grafana-data/
+.ipynb_checkpoints/
