@@ -1,0 +1,138 @@
+---
+- name: Initialize Ubuntu servers
+  hosts: all
+  become: true
+
+  vars:
+    app_name: tiny-inference
+    app_user: tiny-inference
+    app_group: tiny-inference
+    app_dir: /opt/tiny-inference
+    app_env_file: /etc/tiny-inference.env
+    model_cache_dir: /var/lib/tiny-inference/huggingface
+    deploy_public_key_path: "{{ lookup('env', 'HOME') }}/.ssh/tiny-inference.pub"
+
+  tasks:
+    - name: Update APT cache and upgrade installed packages
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+        cache_valid_time: 3600
+
+    - name: Install Python and uv prerequisites
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - git
+          - python3
+          - sudo
+        state: latest
+
+    - name: Install uv
+      ansible.builtin.shell:
+        cmd: curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+        executable: /bin/bash
+        creates: /usr/local/bin/uv
+
+    - name: Create application group
+      ansible.builtin.group:
+        name: "{{ app_group }}"
+        system: true
+
+    - name: Create application user
+      ansible.builtin.user:
+        name: "{{ app_user }}"
+        group: "{{ app_group }}"
+        groups:
+          - systemd-journal
+        append: true
+        home: "/home/{{ app_user }}"
+        shell: /bin/bash
+        system: true
+        create_home: true
+
+    - name: Create application directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ app_dir }}"
+          mode: "0755"
+        - path: "{{ model_cache_dir }}"
+          mode: "0750"
+        - path: "/home/{{ app_user }}/.ssh"
+          mode: "0700"
+
+    - name: Authorize application user SSH key
+      ansible.builtin.copy:
+        content: "{{ lookup('file', deploy_public_key_path) | trim }}\n"
+        dest: "/home/{{ app_user }}/.ssh/authorized_keys"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0600"
+
+    - name: Configure application environment
+      ansible.builtin.copy:
+        dest: "{{ app_env_file }}"
+        owner: root
+        group: "{{ app_group }}"
+        mode: "0640"
+        content: |
+          HF_HOME={{ model_cache_dir }}
+          MODEL_ID=HuggingFaceTB/SmolLM-135M
+          MODEL_REVISION=1d461723eec654e65efdc40cf49301c89c0c92f4
+          PYTHONUNBUFFERED=1
+
+    - name: Allow application service management
+      ansible.builtin.copy:
+        dest: "/etc/sudoers.d/{{ app_name }}"
+        owner: root
+        group: root
+        mode: "0440"
+        validate: /usr/sbin/visudo -cf %s
+        content: |
+          {{ app_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl restart {{ app_name }}.service
+          {{ app_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl status {{ app_name }}.service
+          {{ app_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl is-active {{ app_name }}.service
+
+    - name: Install application systemd service
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/{{ app_name }}.service"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Tiny Inference API
+          Wants=network-online.target
+          After=network-online.target
+          ConditionPathExists={{ app_dir }}/src/main.py
+          ConditionPathExists={{ app_dir }}/.venv/bin/uvicorn
+
+          [Service]
+          Type=simple
+          User={{ app_user }}
+          Group={{ app_group }}
+          WorkingDirectory={{ app_dir }}
+          EnvironmentFile={{ app_env_file }}
+          ExecStart={{ app_dir }}/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000
+          Restart=on-failure
+          RestartSec=5
+          NoNewPrivileges=true
+          PrivateTmp=true
+          ProtectHome=true
+          ProtectSystem=full
+          UMask=0027
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable application service
+      ansible.builtin.systemd_service:
+        name: "{{ app_name }}.service"
+        enabled: true
+        daemon_reload: true
