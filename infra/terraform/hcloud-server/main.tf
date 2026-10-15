@@ -26,7 +26,7 @@ resource "hcloud_server" "tiny_inference" {
 }
 
 resource "local_file" "ansible_inventory" {
-  filename             = "${path.module}/../ansible/inventory.ini"
+  filename             = "${path.module}/../../ansible/inventory.ini"
   file_permission      = "0644"
   directory_permission = "0755"
 

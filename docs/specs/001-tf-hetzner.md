@@ -1,3 +1,7 @@
+---
+status: complete
+---
+
 # Create a Hetzner Server with Terraform
 
 ## Goal
@@ -11,7 +15,7 @@ Provision one cost-optimized ARM64 server on Hetzner Cloud and generate an Ansib
 - OS: Ubuntu 24.04 LTS
 - Networking: default public IPv4 and IPv6 only
 - All unspecified settings use Hetzner or provider defaults
-- Terraform files live in `infra/terraform/`
+- Hetzner Terraform files live in `infra/terraform/hcloud-server/`.
 - Ansible inventory is generated at `infra/ansible/inventory.ini`
 
 ## Implementation Plan
@@ -30,5 +34,3 @@ Provision one cost-optimized ARM64 server on Hetzner Cloud and generate an Ansib
 - The server is reachable over SSH using the generated key.
 - `ansible all -i infra/ansible/inventory.ini -m ping` succeeds.
 - No private key, Terraform state, token, or generated inventory is committed to Git.
-
-Status: ✅
