@@ -3,6 +3,29 @@
 .env.*
 !.env.example
 
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Ansible
+infra/ansible/inventory.ini
+*.retry
+.ansible/
+ansible_facts/
+.vault_pass
+vault_password_file
+
 # Python
 __pycache__/
 *.py[cod]
