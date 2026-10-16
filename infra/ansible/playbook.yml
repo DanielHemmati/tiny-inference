@@ -2,6 +2,10 @@
 - name: Initialize Ubuntu servers
   hosts: all
   become: true
+  # if you don't set this explicitly, gather_facts will run which is a problem for tailscale connection
+  # We are installing tailscale using cloud-init using terraform.
+  # if set to true gather_facts can't run b/c tailscale is not setup yet
+  gather_facts: false
 
   vars:
     app_name: tiny-inference
@@ -11,6 +15,62 @@
     app_env_file: /etc/tiny-inference.env
     model_cache_dir: /var/lib/tiny-inference/huggingface
     deploy_public_key_path: "{{ lookup('env', 'HOME') }}/.ssh/tiny-inference.pub"
+
+  # <tailscale and ssh readiness check
+  pre_tasks:
+    - name: Wait for the server to become reachable through Tailscale
+      block:
+        - name: Probe the server through Tailscale
+          ansible.builtin.command:
+            argv:
+              - tailscale
+              - ping
+              - --c=1
+              - --timeout=3s
+              - "{{ ansible_host | default(inventory_hostname) }}"
+          delegate_to: localhost
+          become: false
+          register: tailscale_ping
+          changed_when: false
+          until: tailscale_ping.rc == 0
+          retries: 60
+          delay: 2
+
+      rescue:
+        - name: Report Tailscale bootstrap failure
+          ansible.builtin.fail:
+            msg: >-
+              {{ ansible_host | default(inventory_hostname) }} did not become
+              reachable through Tailscale within five minutes. Cloud-init may
+              still be running or Tailscale installation may have failed.
+              Open the Hetzner console and check `cloud-init status --long`
+              and `/var/log/cloud-init-output.log` on the server.
+
+    - name: Wait for SSH over Tailscale
+      block:
+        - name: Probe the SSH connection
+          ansible.builtin.wait_for_connection:
+            delay: 5
+            sleep: 5
+            timeout: 300
+
+      rescue:
+        - name: Report SSH readiness failure
+          ansible.builtin.fail:
+            msg: >-
+              {{ ansible_host | default(inventory_hostname) }} is reachable
+              through Tailscale, but SSH did not become ready within five
+              minutes. Check the SSH service and cloud-init logs from the
+              Hetzner console.
+
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command:
+        argv:
+          - cloud-init
+          - status
+          - --wait
+      changed_when: false
+  # </>
 
   tasks:
     - name: Update APT cache and upgrade installed packages

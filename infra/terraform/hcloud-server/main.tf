@@ -12,16 +12,47 @@ resource "hcloud_ssh_key" "tiny_inference" {
   public_key = trimspace(data.local_file.ssh_public_key.content)
 }
 
+resource "hcloud_firewall" "tiny_inference" {
+  name = "tiny-inference"
+
+  rule {
+    direction   = "in"
+    protocol    = "udp"
+    port        = "41641"
+    source_ips  = ["0.0.0.0/0", "::/0"]
+    description = "Tailscale direct connections"
+  }
+
+  rule {
+    direction   = "in"
+    protocol    = "tcp"
+    port        = "8000"
+    source_ips  = ["0.0.0.0/0", "::/0"]
+    description = "Public FastAPI HTTP service"
+  }
+}
+
 resource "hcloud_server" "tiny_inference" {
-  name        = "tiny-inference"
-  location    = "hel1"
-  server_type = "cax31"
-  image       = "ubuntu-24.04"
-  ssh_keys    = [hcloud_ssh_key.tiny_inference.id]
+  name         = "tiny-inference"
+  location     = "hel1"
+  server_type  = "cax31"
+  image        = "ubuntu-24.04"
+  ssh_keys     = [hcloud_ssh_key.tiny_inference.id]
+  firewall_ids = [hcloud_firewall.tiny_inference.id]
+
+  user_data = templatefile("${path.module}/cloud-init.yml.tftpl", {
+    tailscale_auth_key = var.tailscale_auth_key
+    tailscale_hostname = "tiny-inference"
+  })
 
   public_net {
     ipv4_enabled = true
     ipv6_enabled = true
+  }
+
+  lifecycle {
+    # Cloud-init runs only on first boot; template changes must not rebuild a live server.
+    ignore_changes = [user_data]
   }
 }
 
@@ -32,7 +63,7 @@ resource "local_file" "ansible_inventory" {
 
   content = <<-EOT
     [tiny_inference]
-    tiny-inference ansible_host=${hcloud_server.tiny_inference.ipv4_address} 
+    tiny-inference ansible_host=tiny-inference
 
     [tiny_inference:vars]
     ansible_user=root 
