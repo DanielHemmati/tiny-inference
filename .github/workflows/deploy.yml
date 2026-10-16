@@ -1,0 +1,129 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tiny-inference-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8 # v4.1.2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          ping: ${{ secrets.DEPLOY_HOST }}
+
+      - name: Configure SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9._:-]+$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
+
+          ssh-keygen -y -f "$HOME/.ssh/deploy_key" >/dev/null
+          ssh-keygen -F "$DEPLOY_HOST" -f "$HOME/.ssh/known_hosts" >/dev/null
+
+          printf '%s\n' \
+            'Host deploy-target' \
+            "  HostName $DEPLOY_HOST" \
+            "  User $DEPLOY_USER" \
+            '  IdentityFile ~/.ssh/deploy_key' \
+            '  IdentitiesOnly yes' \
+            '  BatchMode yes' \
+            '  StrictHostKeyChecking yes' \
+            '  UserKnownHostsFile ~/.ssh/known_hosts' \
+            '  ConnectTimeout 10' \
+            > "$HOME/.ssh/config"
+          chmod 600 "$HOME/.ssh/config"
+
+          ssh deploy-target true
+
+      - name: Deploy application
+        env:
+          REPOSITORY_URL: https://github.com/${{ github.repository }}.git
+        run: |
+          set -Eeuo pipefail
+
+          # REPOSITORY_URL intentionally expands on the runner and is passed as
+          # a positional argument to the non-interactive remote script.
+          # shellcheck disable=SC2029
+          ssh deploy-target "bash -s -- '$REPOSITORY_URL'" <<'REMOTE_SCRIPT'
+          set -Eeuo pipefail
+
+          repository_url=$1
+          app_dir=/opt/tiny-inference
+
+          cd "$app_dir"
+
+          if [[ ! -d .git ]]; then
+            if [[ -n "$(find . -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+              echo "Refusing to clone into non-empty $app_dir" >&2
+              exit 1
+            fi
+
+            git clone --branch main --single-branch "$repository_url" .
+          else
+            if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+              echo "Refusing to deploy over tracked server-side changes" >&2
+              git status --short --untracked-files=no >&2
+              exit 1
+            fi
+
+            git fetch --prune origin main
+            git checkout main
+            git merge --ff-only origin/main
+          fi
+
+          uv sync --frozen
+          sudo -n /usr/bin/systemctl restart tiny-inference.service
+
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error http://127.0.0.1:8000/ >/dev/null; then
+              printf 'Application became ready after %s attempt(s).\n' "$attempt"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo 'Application did not become ready within 120 seconds.' >&2
+          sudo -n /usr/bin/systemctl status tiny-inference.service --no-pager >&2 || true
+          journalctl --unit tiny-inference.service --lines 100 --no-pager >&2 || true
+          exit 1
+          REMOTE_SCRIPT
+
+      - name: Write deployment summary
+        run: |
+          set -Eeuo pipefail
+          deployed_commit=$(ssh deploy-target 'git -C /opt/tiny-inference rev-parse HEAD')
+
+          {
+            echo '### Deployment complete'
+            echo
+            echo "- Commit: \`$deployed_commit\`"
+            echo "- Ref: \`${GITHUB_REF_NAME}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
