@@ -1,0 +1,128 @@
+name: Notify Telegram
+
+on:
+  workflow_run:
+    workflows:
+      - Deploy
+    types:
+      - completed
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  notify:
+    name: Send successful deployment notification
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Send Telegram notification
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_CREATED_AT: ${{ github.event.workflow_run.created_at }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT_NAME: ${{ github.event.workflow_run.event }}
+          ACTOR: ${{ github.event.workflow_run.actor.login }}
+        run: |
+          set -Eeuo pipefail
+
+          html_escape() {
+            sed \
+              -e 's/&/\&amp;/g' \
+              -e 's/</\&lt;/g' \
+              -e 's/>/\&gt;/g' \
+              -e 's/"/\&quot;/g' \
+              -e "s/'/\&#39;/g"
+          }
+
+          format_duration() {
+            local started_at=$1
+            local started_epoch now_epoch elapsed hours minutes seconds
+            started_epoch=$(date --date="$started_at" +%s)
+            now_epoch=$(date +%s)
+            elapsed=$((now_epoch - started_epoch))
+            ((elapsed < 0)) && elapsed=0
+            hours=$((elapsed / 3600))
+            minutes=$(((elapsed % 3600) / 60))
+            seconds=$((elapsed % 60))
+
+            if ((hours > 0)); then
+              printf '%dh %dm %ds' "$hours" "$minutes" "$seconds"
+            else
+              printf '%dm %ds' "$minutes" "$seconds"
+            fi
+          }
+
+          api_headers=(
+            --header 'Accept: application/vnd.github+json'
+            --header "Authorization: Bearer $GH_TOKEN"
+            --header 'X-GitHub-Api-Version: 2022-11-28'
+          )
+
+          jobs_json=$(curl --fail-with-body --silent --show-error \
+            "${api_headers[@]}" \
+            "https://api.github.com/repos/$REPOSITORY/actions/runs/$RUN_ID/jobs?filter=latest&per_page=100")
+          commit_json=$(curl --fail-with-body --silent --show-error \
+            "${api_headers[@]}" \
+            "https://api.github.com/repos/$REPOSITORY/commits/$HEAD_SHA")
+
+          jobs_text=''
+          while IFS= read -r job; do
+            name=$(jq -r '.name' <<<"$job" | html_escape)
+            conclusion=$(jq -r '.conclusion' <<<"$job")
+            case "$conclusion" in
+              success) icon='✅' ;;
+              failure) icon='❌' ;;
+              cancelled) icon='🚫' ;;
+              skipped) icon='⏭️' ;;
+              *) icon='⚪' ;;
+            esac
+            jobs_text+="$icon $name"$'\n'
+          done < <(jq -c '.jobs[] | select(.status == "completed")' <<<"$jobs_json")
+          jobs_text=${jobs_text%$'\n'}
+
+          repo_name=${REPOSITORY##*/}
+          repo_name=${repo_name//-/ }
+          repo_name=$(sed -E 's/(^| )([a-z])/\1\U\2/g' <<<"$repo_name")
+          commit_subject=$(jq -r '.commit.message | split("\n")[0]' <<<"$commit_json" | html_escape)
+          commit_url=$(jq -r '.html_url' <<<"$commit_json" | html_escape)
+          short_sha=${HEAD_SHA:0:7}
+          duration=$(format_duration "$RUN_CREATED_AT")
+
+          escaped_repo=$(html_escape <<<"$REPOSITORY")
+          escaped_branch=$(html_escape <<<"$HEAD_BRANCH")
+          escaped_event=$(html_escape <<<"$EVENT_NAME")
+          escaped_actor=$(html_escape <<<"$ACTOR")
+          escaped_run_url=$(html_escape <<<"$RUN_URL")
+
+          printf -v message \
+            '✅ <b>%s live deployment — success</b>\n<code>%s</code> · <code>%s</code> · %s · #%s · %s · by %s\n\n<a href="%s">%s</a> %s\n\n<b>Jobs</b>\n%s\n\n<a href="%s">Run</a> · <a href="%s">Commit</a>' \
+            "$repo_name" "$escaped_repo" "$escaped_branch" "$escaped_event" \
+            "$RUN_NUMBER" "$duration" "$escaped_actor" "$commit_url" \
+            "$short_sha" "$commit_subject" "$jobs_text" "$escaped_run_url" \
+            "$commit_url"
+
+          payload=$(jq -n \
+            --arg chat_id "$TELEGRAM_CHAT_ID" \
+            --arg text "$message" \
+            '{chat_id: $chat_id, text: $text, parse_mode: "HTML", disable_web_page_preview: true}')
+
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header 'Content-Type: application/json' \
+            --data "$payload" \
+            "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+            >/dev/null
+
+          echo 'Telegram deployment notification sent'
