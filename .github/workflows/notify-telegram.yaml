@@ -70,11 +70,38 @@ jobs:
             --header 'X-GitHub-Api-Version: 2022-11-28'
           )
 
-          jobs_json=$(curl --fail-with-body --silent --show-error \
-            "${api_headers[@]}" \
+          github_get() {
+            local label=$1
+            local url=$2
+            local response_file status detail
+            response_file=$(mktemp)
+
+            if ! status=$(curl --silent --show-error \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
+              "${api_headers[@]}" \
+              "$url"); then
+              rm -f "$response_file"
+              echo "GitHub API $label request failed" >&2
+              return 1
+            fi
+
+            if [[ ! "$status" =~ ^2[0-9][0-9]$ ]]; then
+              detail=$(jq -r '.message // "Unknown error"' "$response_file" 2>/dev/null || true)
+              rm -f "$response_file"
+              echo "GitHub API $label request failed (HTTP $status): $detail" >&2
+              return 1
+            fi
+
+            cat "$response_file"
+            rm -f "$response_file"
+          }
+
+          jobs_json=$(github_get \
+            'workflow jobs' \
             "https://api.github.com/repos/$REPOSITORY/actions/runs/$RUN_ID/jobs?filter=latest&per_page=100")
-          commit_json=$(curl --fail-with-body --silent --show-error \
-            "${api_headers[@]}" \
+          commit_json=$(github_get \
+            'commit' \
             "https://api.github.com/repos/$REPOSITORY/commits/$HEAD_SHA")
 
           jobs_text=''
@@ -118,11 +145,26 @@ jobs:
             --arg text "$message" \
             '{chat_id: $chat_id, text: $text, parse_mode: "HTML", disable_web_page_preview: true}')
 
-          curl --fail-with-body --silent --show-error \
+          telegram_response=$(mktemp)
+          if ! telegram_status=$(curl --silent --show-error \
+            --output "$telegram_response" \
+            --write-out '%{http_code}' \
             --request POST \
             --header 'Content-Type: application/json' \
             --data "$payload" \
-            "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
-            >/dev/null
+            "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage"); then
+            rm -f "$telegram_response"
+            echo 'Telegram API request failed' >&2
+            exit 1
+          fi
+
+          telegram_ok=$(jq -r '.ok // false' "$telegram_response" 2>/dev/null || true)
+          if [[ ! "$telegram_status" =~ ^2[0-9][0-9]$ || "$telegram_ok" != 'true' ]]; then
+            telegram_detail=$(jq -r '.description // "Unknown error"' "$telegram_response" 2>/dev/null || true)
+            rm -f "$telegram_response"
+            echo "Telegram API request failed (HTTP $telegram_status): $telegram_detail" >&2
+            exit 1
+          fi
+          rm -f "$telegram_response"
 
           echo 'Telegram deployment notification sent'
