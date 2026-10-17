@@ -36,14 +36,27 @@ class ApiTests(unittest.TestCase):
             "prompt_tokens": 1,
             "generated_tokens": 1,
         }
-        with patch("src.main.generate", return_value=result):
+        with (
+            patch("src.main.generate", return_value=result),
+            patch("src.main.process_memory_mb", side_effect=[300.0, 304.0]),
+            patch("src.main.perf_counter", side_effect=[10.0, 10.5]),
+        ):
             response = self.client.post(
                 "/generate",
                 json={"prompt": "Hello", "max_new_tokens": 8},
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), result)
+        self.assertEqual(
+            response.json(),
+            {
+                **result,
+                "generation_time_ms": 500,
+                "memory_before_mb": 300.0,
+                "memory_after_mb": 304.0,
+                "memory_change_mb": 4.0,
+            },
+        )
 
     def test_rejects_request_while_busy(self) -> None:
         app.state.generating = True
