@@ -109,20 +109,56 @@ jobs:
           fi
 
           uv sync --frozen --python 3.13
+
+          set -a
+          source /etc/tiny-inference.env
+          set +a
+          .venv/bin/python -m src.model --prefetch
+
           sudo -n /usr/bin/systemctl restart tiny-inference.service
 
+          ready=false
           for attempt in $(seq 1 60); do
-            if curl --fail --silent --show-error http://127.0.0.1:8000/ >/dev/null; then
+            if curl --fail --silent --show-error http://127.0.0.1:8000/ready >/dev/null; then
               printf 'Application became ready after %s attempt(s).\n' "$attempt"
-              exit 0
+              ready=true
+              break
             fi
             sleep 2
           done
 
-          echo 'Application did not become ready within 120 seconds.' >&2
-          sudo -n /usr/bin/systemctl status tiny-inference.service --no-pager >&2 || true
-          journalctl --unit tiny-inference.service --lines 100 --no-pager >&2 || true
-          exit 1
+          if [[ "$ready" != true ]]; then
+            echo 'Application did not become ready within 120 seconds.' >&2
+            sudo -n /usr/bin/systemctl status tiny-inference.service --no-pager >&2 || true
+            journalctl --unit tiny-inference.service --lines 100 --no-pager >&2 || true
+            exit 1
+          fi
+
+          response_file=$(mktemp)
+          trap 'rm -f "$response_file"' EXIT
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --max-time 120 \
+            --header 'Content-Type: application/json' \
+            --data '{"prompt":"The capital of France is","max_new_tokens":8}' \
+            --output "$response_file" \
+            http://127.0.0.1:8000/generate
+
+          .venv/bin/python - "$response_file" <<'PYTHON'
+          import json
+          import sys
+
+          with open(sys.argv[1]) as response_file:
+              response = json.load(response_file)
+
+          expected = {"completion", "prompt_tokens", "generated_tokens"}
+          if not expected.issubset(response):
+              raise SystemExit("Generation response is missing expected fields")
+
+          print("Generation smoke test passed")
+          PYTHON
           REMOTE_SCRIPT
 
       - name: Write deployment summary
