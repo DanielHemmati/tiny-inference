@@ -84,14 +84,20 @@ async def generate_text(
             prompt,
             max_new_tokens,
         )
-        generation_time_ms = round((perf_counter() - started_at) * 1_000)
+        generation_time_seconds = perf_counter() - started_at
+        generated_tokens = int(result["generated_tokens"])
+        tokens_per_second = (
+            round(generated_tokens / generation_time_seconds, 2)
+            if generation_time_seconds > 0
+            else 0.0
+        )
         memory_after_mb = process_memory_mb()
 
         # PyTorch may retain allocated memory for reuse, so memory can stay high
         # after generation instead of returning to its previous value.
         return {
             **result,
-            "generation_time_ms": generation_time_ms,
+            "tokens_per_second": tokens_per_second,
             "memory_before_mb": memory_before_mb,
             "memory_after_mb": memory_after_mb,
             "memory_change_mb": round(memory_after_mb - memory_before_mb, 1),

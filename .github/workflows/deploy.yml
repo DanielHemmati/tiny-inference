@@ -157,7 +157,7 @@ jobs:
               "completion",
               "prompt_tokens",
               "generated_tokens",
-              "generation_time_ms",
+              "tokens_per_second",
               "memory_before_mb",
               "memory_after_mb",
               "memory_change_mb",

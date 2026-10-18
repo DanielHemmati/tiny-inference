@@ -51,7 +51,7 @@ class ApiTests(unittest.TestCase):
             response.json(),
             {
                 **result,
-                "generation_time_ms": 500,
+                "tokens_per_second": 2.0,
                 "memory_before_mb": 300.0,
                 "memory_after_mb": 304.0,
                 "memory_change_mb": 4.0,
