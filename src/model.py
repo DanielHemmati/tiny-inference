@@ -1,5 +1,6 @@
 import argparse
 import os
+from time import perf_counter
 from typing import cast
 
 import torch
@@ -10,9 +11,30 @@ from transformers import (
     LlamaForCausalLM,
     PreTrainedTokenizerBase,
 )
+from transformers.generation.streamers import BaseStreamer
 
 CONTEXT_LENGTH = 2_048
 MAX_NEW_TOKENS = 128
+
+
+class FirstTokenTimingStreamer(BaseStreamer):
+    def __init__(self) -> None:
+        self.started_at = perf_counter()
+        self.received_prompt = False
+        self.time_to_first_token_ms: float | None = None
+
+    def put(self, value: torch.Tensor) -> None:
+        if not self.received_prompt:
+            self.received_prompt = True
+            return
+        if self.time_to_first_token_ms is None:
+            self.time_to_first_token_ms = round(
+                (perf_counter() - self.started_at) * 1_000,
+                2,
+            )
+
+    def end(self) -> None:
+        pass
 
 
 def get_model_config() -> tuple[str, str]:
@@ -49,12 +71,13 @@ def generate(
     model: LlamaForCausalLM,
     prompt: str,
     max_new_tokens: int,
-) -> dict[str, str | int]:
+) -> dict[str, str | int | float]:
     if not prompt:
         raise ValueError("prompt must not be empty")
     if not 1 <= max_new_tokens <= MAX_NEW_TOKENS:
         raise ValueError(f"max_new_tokens must be between 1 and {MAX_NEW_TOKENS}")
 
+    timing_streamer = FirstTokenTimingStreamer()
     inputs = tokenizer(prompt, return_tensors="pt")
     prompt_tokens = int(inputs["input_ids"].shape[-1])
     if prompt_tokens + max_new_tokens > CONTEXT_LENGTH:
@@ -67,7 +90,11 @@ def generate(
             max_new_tokens=max_new_tokens,
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
+            streamer=timing_streamer,
         )
+
+    if timing_streamer.time_to_first_token_ms is None:
+        raise RuntimeError("Model generation did not emit a token")
 
     generated_ids = output[0, prompt_tokens:]
     return {
@@ -77,6 +104,7 @@ def generate(
         ),
         "prompt_tokens": prompt_tokens,
         "generated_tokens": int(generated_ids.shape[-1]),
+        "time_to_first_token_ms": timing_streamer.time_to_first_token_ms,
     }
 
 

@@ -1,10 +1,17 @@
 import os
 import unittest
+from typing import Protocol, cast
 from unittest.mock import patch
 
 import torch
 
 from src.model import CONTEXT_LENGTH, generate, get_model_config
+
+
+class Streamer(Protocol):
+    def put(self, value: torch.Tensor) -> None: ...
+
+    def end(self) -> None: ...
 
 
 class FakeTokenizer:
@@ -26,6 +33,10 @@ class FakeModel:
     def generate(self, input_ids: torch.Tensor, **kwargs: object) -> torch.Tensor:
         self.inference_mode_enabled = not torch.is_grad_enabled()
         generated = torch.tensor([[10, 11]])
+        streamer = cast(Streamer, kwargs["streamer"])
+        streamer.put(input_ids)
+        streamer.put(generated[:, 0])
+        streamer.end()
         return torch.cat((input_ids, generated), dim=1)
 
 
@@ -47,11 +58,13 @@ class ModelConfigTests(unittest.TestCase):
 class ModelRuntimeTests(unittest.TestCase):
     def test_generates_only_completion_in_inference_mode(self) -> None:
         model = FakeModel()
-        result = generate(FakeTokenizer(), model, "A prompt", max_new_tokens=2)
+        with patch("src.model.perf_counter", side_effect=[10.0, 10.25]):
+            result = generate(FakeTokenizer(), model, "A prompt", max_new_tokens=2)
 
         self.assertEqual(result["completion"], "completion")
         self.assertEqual(result["prompt_tokens"], 2)
         self.assertEqual(result["generated_tokens"], 2)
+        self.assertEqual(result["time_to_first_token_ms"], 250.0)
         self.assertTrue(model.inference_mode_enabled)
 
     def test_rejects_more_than_128_new_tokens(self) -> None:

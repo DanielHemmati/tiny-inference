@@ -35,6 +35,7 @@ class ApiTests(unittest.TestCase):
             "completion": " world",
             "prompt_tokens": 1,
             "generated_tokens": 1,
+            "time_to_first_token_ms": 100.0,
         }
         with (
             patch("src.main.generate", return_value=result),

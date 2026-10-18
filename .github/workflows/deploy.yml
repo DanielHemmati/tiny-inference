@@ -158,6 +158,7 @@ jobs:
               "prompt_tokens",
               "generated_tokens",
               "tokens_per_second",
+              "time_to_first_token_ms",
               "memory_before_mb",
               "memory_after_mb",
               "memory_change_mb",
