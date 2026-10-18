@@ -14,6 +14,22 @@ write_files:
       ${tailscale_auth_key}
 
 runcmd:
-  - curl -fsSL https://tailscale.com/install.sh | sh
-  - tailscale up --auth-key=file:/run/tailscale-auth-key --hostname=$tailscale_hostname}
-  - rm -f /run/tailscale-auth-key
+  -
+    - bash
+    - -c
+    - |
+      set -Eeuo pipefail
+
+      readonly auth_key_file=/run/tailscale-auth-key
+      cleanup() {
+        rm -f "$auth_key_file"
+      }
+      trap cleanup EXIT
+
+      test -s "$auth_key_file"
+      curl --fail --show-error --silent --location \
+        --retry 5 --retry-all-errors --connect-timeout 10 \
+        https://tailscale.com/install.sh | sh
+      tailscale up \
+        --auth-key="file:$auth_key_file" \
+        --hostname="${tailscale_hostname}"
